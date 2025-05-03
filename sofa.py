@@ -8,13 +8,13 @@ import argparse
 import os
 import json
 
-def load_model_and_tokenizer(model_id, device):
-    if gptqmodel:
+def load_model_and_tokenizer(model_id, device,gptqmodel_=False):
+    if gptqmodel_:
         from gptqmodel import GPTQModel
         model = GPTQModel.from_quantized(model_id, trust_remote_code=True)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
         model = AutoModelForCausalLM.from_pretrained(model_id).to(device)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     model.eval()
     tokenizer.pad_token = tokenizer.eos_token
     return tokenizer, model
@@ -67,7 +67,7 @@ def compute_perplexity(texts, tokenizer, model, batch_size=16, max_length=None, 
 
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer, model = load_model_and_tokenizer(args.model_id, device)
+    tokenizer, model = load_model_and_tokenizer(args.model_id, device,gptqmodel_=args.gptqmodel_)
 
     df = load_dataset("copenlu/sofa", split="train").to_pandas()
     df["ppl"] = compute_perplexity(df["probe"].tolist(), tokenizer, model, args.batch_size, args.max_length)
@@ -109,6 +109,6 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--gptqmodel", action="store_true")
+    parser.add_argument("--gptqmodel_", action="store_true")
     args = parser.parse_args()
     main(args)
