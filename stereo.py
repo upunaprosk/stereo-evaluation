@@ -295,7 +295,7 @@ def compute_and_save_stereoset_predictions(model_name, input_file, output_path, 
 
 class ScoreEvaluator:
     def __init__(self, gold_file_path, predictions_file_path):
-        stereoset = dataloader.StereoSet(gold_file_path)
+        stereoset = StereoSet(gold_file_path)
         self.intrasentence_examples = stereoset.get_intrasentence_examples()
         with open(predictions_file_path) as f:
             self.predictions = json.load(f)
