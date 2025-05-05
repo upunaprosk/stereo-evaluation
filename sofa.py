@@ -68,8 +68,10 @@ def compute_perplexity(texts, tokenizer, model, batch_size=16, max_length=None, 
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer, model = load_model_and_tokenizer(args.model_id, device,gptqmodel_=args.gptqmodel_)
-
-    df = load_dataset("copenlu/sofa", split="train").to_pandas()
+    dataset_path = "copenlu/sofa"
+    if args.subset:
+        dataset_path = "iproskurina/sofa-500"
+    df = load_dataset(dataset_path, split="train").to_pandas()
     df["ppl"] = compute_perplexity(df["probe"].tolist(), tokenizer, model, args.batch_size, args.max_length)
 
     identity_ppl = {}
@@ -110,5 +112,6 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--gptqmodel_", action="store_true")
+    parser.add_argument("--subset", action="store_true")
     args = parser.parse_args()
     main(args)
