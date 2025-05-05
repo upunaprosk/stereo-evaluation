@@ -71,6 +71,8 @@ def main(args):
     dataset_path = "copenlu/sofa"
     if args.subset:
         dataset_path = "iproskurina/sofa-500"
+    if args.small_subset:
+        dataset_path = "iproskurina/sofa-250"
     df = load_dataset(dataset_path, split="train").to_pandas()
     df["ppl"] = compute_perplexity(df["probe"].tolist(), tokenizer, model, args.batch_size, args.max_length)
 
@@ -113,5 +115,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--gptqmodel_", action="store_true")
     parser.add_argument("--subset", action="store_true")
+    parser.add_argument("--small_subset", action="store_true")
     args = parser.parse_args()
     main(args)
