@@ -236,7 +236,7 @@ def compute_and_save_stereoset_predictions(model_name, input_file, output_path, 
         from gptqmodel import GPTQModel
         model = GPTQModel.from_quantized(model_name, trust_remote_code=True)
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+        model = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype=torch.float16).to(device)
 
     model.eval()
     stereoset = StereoSet(input_file)
