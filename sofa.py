@@ -13,7 +13,7 @@ def load_model_and_tokenizer(model_id, device,gptqmodel_=False):
         from gptqmodel import GPTQModel
         model = GPTQModel.from_quantized(model_id, trust_remote_code=True)
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_id).to(device)
+        model = AutoModelForCausalLM.from_pretrained(model_id,torch_dtype=torch.float16).to(device)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model.eval()
     tokenizer.pad_token = tokenizer.eos_token
