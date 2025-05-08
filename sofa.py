@@ -1,4 +1,5 @@
 import torch
+import random
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 import pandas as pd
@@ -7,6 +8,15 @@ from tqdm import tqdm
 import argparse
 import os
 import json
+
+def seed_everything(seed):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def load_model_and_tokenizer(model_id, device,gptqmodel_=False):
     if gptqmodel_:
@@ -66,13 +76,16 @@ def compute_perplexity(texts, tokenizer, model, batch_size=16, max_length=None, 
     return results
 
 def main(args):
+    seed_everything(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     tokenizer, model = load_model_and_tokenizer(args.model_id, device,gptqmodel_=args.gptqmodel_)
     dataset_path = "copenlu/sofa"
     if args.subset:
         dataset_path = "iproskurina/sofa-500"
     if args.small_subset:
         dataset_path = "iproskurina/sofa-250"
+
     df = load_dataset(dataset_path, split="train").to_pandas()
     df["ppl"] = compute_perplexity(df["probe"].tolist(), tokenizer, model, args.batch_size, args.max_length)
 
@@ -99,12 +112,15 @@ def main(args):
 
     model_name_part = args.model_id.split("/")[-1].replace("-", "_").replace(".", "_")
     base = args.output if args.output else f"{model_name_part}_sofa"
-    df.to_csv(f"{base}_results.csv", index=False)
+    # df.to_csv(f"{base}_results.csv", index=False)
+    # saves to  f"{model_name_part}_sofa_metrics.json"
     with open(f"{base}_metrics.json", "w") as f:
         json.dump({
             "model": args.model_id,
             "sofa_scores": sofa_scores,
-            "global_sofa_score": global_sofa_score
+            "global_sofa_score": global_sofa_score,
+            "dataset_path": dataset_path,
+            "seed": args.seed,
         }, f, indent=2)
 
 if __name__ == "__main__":
@@ -116,5 +132,6 @@ if __name__ == "__main__":
     parser.add_argument("--gptqmodel_", action="store_true")
     parser.add_argument("--subset", action="store_true")
     parser.add_argument("--small_subset", action="store_true")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     main(args)

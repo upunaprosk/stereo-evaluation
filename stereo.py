@@ -5,23 +5,32 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from torch.nn.functional import log_softmax
 from collections import Counter, defaultdict
 import pprint
-
-
-import json
 import string
-from tqdm import tqdm
+import random
+import pandas as pd
+import os
+
+
+def seed_everything(seed):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 class IntrasentenceLoader(object):
     """Loads dataset containing StereoSet intrasentence examples."""
 
     def __init__(
-        self,
-        tokenizer,
-        max_seq_length=None,
-        pad_to_max_length=False,
-        input_file="../../data/bias.json",
-        model_name_or_path=None,
+            self,
+            tokenizer,
+            max_seq_length=None,
+            pad_to_max_length=False,
+            input_file="../../data/bias.json",
+            model_name_or_path=None,
     ):
         stereoset = StereoSet(input_file)
         clusters = stereoset.get_intrasentence_examples()
@@ -35,8 +44,8 @@ class IntrasentenceLoader(object):
         for cluster in clusters:
             for sentence in cluster.sentences:
                 if (
-                    self._model_name_or_path is not None
-                    and "roberta" in self._model_name_or_path
+                        self._model_name_or_path is not None
+                        and "roberta" in self._model_name_or_path
                 ):
                     insertion_tokens = self._tokenizer.encode(
                         f" {sentence.template_word}",
@@ -227,6 +236,7 @@ class IntrasentenceExample(Example):
             ID, bias_type, target, context, sentences
         )
 
+
 def compute_and_save_stereoset_predictions(model_name, input_file, output_path, batch_size=32, gptqmodel=False):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
@@ -236,7 +246,7 @@ def compute_and_save_stereoset_predictions(model_name, input_file, output_path, 
         from gptqmodel import GPTQModel
         model = GPTQModel.from_quantized(model_name, trust_remote_code=True)
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype=torch.float16).to(device)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16).to(device)
 
     model.eval()
     stereoset = StereoSet(input_file)
@@ -345,8 +355,10 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--gptqmodel", action="store_true")
     parser.add_argument("--input_file", type=str, default="data/stereoset/test.json")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    seed_everything(args.seed)
     model_suffix = args.model_name.split("/")[-1]
     pred_file = f"{model_suffix}_stereoset_predictions.json"
     score_file = f"{model_suffix}_stereoset_eval_scores.json"
