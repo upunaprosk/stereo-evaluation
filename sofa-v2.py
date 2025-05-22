@@ -88,8 +88,17 @@ def compute_ppl_for_model(predictions, model_name, batch_size=64):
         return compute(predictions=predictions, model_id=model_name, batch_size=batch_size)
     else:
         metric = hf_load("perplexity", module_type="metric")
-        result = metric.compute(model_id=model_name, predictions=predictions, batch_size=batch_size)
-        return result["perplexities"]
+        try:
+            result = metric.compute(model_id=model_name, predictions=predictions, batch_size=batch_size)
+            ppls = result.get("perplexities", [])
+            if not ppls or all(np.isnan(p) for p in ppls):
+                print(f"[{model_name}] WARNING: metric.compute() returned empty or NaN-only results")
+                return [float('nan')] * len(predictions)
+            return ppls
+        except Exception as e:
+            print(f"[{model_name}] ERROR in metric.compute(): {e}")
+            return [float('nan')] * len(predictions)
+
 
 def compute_probe_ppl(df, model_name, batch_size=64):
     df['probe'] = df['probe'].apply(lambda x: x.capitalize() if isinstance(x, str) else x)
