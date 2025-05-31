@@ -8,7 +8,6 @@
 # Requires the 'evaluate' library for perplexity computation
 # Requires 'colorama' for logging
 
-
 from evaluate import load
 from colorama import Fore, Back, Style
 import os
@@ -108,7 +107,7 @@ def compute_identity_ppls(identity_file, model_name):
         logger.info('Concat PPLs for identity ' + key)
         # raises an error if contains nans
         identities_w_PPL = pd.DataFrame(list(zip(value, *PPL.values())), columns=["identity"] + list(PPL.keys()))
-        identities_w_PPL = identities_w_PPL.rename(columns=LMs)
+        #identities_w_PPL = identities_w_PPL.rename(columns=LMs)
         file_name = key + '-identities-w-PPLs.csv'
         logger.debug('Saving identities_w_PPL to' + file_name)
         identities_w_PPL.to_csv('./' + file_name, index=False)
@@ -116,7 +115,7 @@ def compute_identity_ppls(identity_file, model_name):
     return
 
 def download_sofa_dataset(probe_file):
-    ds = load_dataset("copenlu/sofa")
+    ds = load_dataset("iproskurina/sofa-500")
     df = pd.DataFrame(ds["train"])
     os.makedirs(os.path.dirname(probe_file), exist_ok=True)
     df.to_csv(probe_file, index=False)
@@ -128,7 +127,7 @@ def compute_sofa_score(df_probes, model_name):
 
     LMs_columns = [model_name]
     df = df_probes
-    path = '/'
+    path = './'
     identities = {}
     unique_categories = df['category'].unique()
     num_categories = len(unique_categories)
