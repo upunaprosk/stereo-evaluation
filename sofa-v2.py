@@ -276,7 +276,7 @@ def main():
         model = GPTQModel.from_quantized(args.model_name, trust_remote_code=True)
     else:
         # half precision
-        model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16, device_map='auto')
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
