@@ -1,49 +1,46 @@
 # This code is for SoFA score computation: https://aclanthology.org/2024.emnlp-main.812/
 # SoFA is licensed under the MIT License.
 # This implementation follows the original paper,
-# with some bug fixes — it's a newer version of https://huggingface.co/datasets/copenlu/sofa/tree/main
+# with some bug fixes — it's a version of https://huggingface.co/datasets/copenlu/sofa/tree/main
 #
 # SoFa (Social Fairness) is a large-scale benchmark for evaluating social biases in language models,
 # designed to assess disparate treatment across a diverse range of identities and stereotypes beyond binary fairness tests.
-# Requires the 'evaluate' library for perplexity computation
 # Requires 'colorama' for logging
+# Requires 'gptqmodel' if --gptqmodel is passed
+# Supports half precision models or gptq-quantized models
 
-from evaluate import load
-from colorama import Fore, Back, Style
 import os
 import argparse
 import pandas as pd
 import json
-from datasets import load_dataset
 import numpy as np
-import sys
+import torch
+from torch.nn import CrossEntropyLoss
+from torch.utils.data import DataLoader, Dataset, TensorDataset
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from datasets import load_dataset
 import logging
-from typing import Optional, Dict
+import sys
+from colorama import Fore, Back, Style
+from tqdm import tqdm
+
 
 
 class ColoredFormatter(logging.Formatter):
-    """Colored log formatter."""
-
-    def __init__(self, *args, colors: Optional[Dict[str, str]] = None, **kwargs) -> None:
-        """Initialize the formatter with specified format strings."""
-
+    def __init__(self, *args, colors=None, **kwargs):
         super().__init__(*args, **kwargs)
-
         self.colors = colors if colors else {}
 
-    def format(self, record) -> str:
-        """Format the specified record as text."""
-
+    def format(self, record):
         record.color = self.colors.get(record.levelname, '')
         record.reset = Style.RESET_ALL
-
         return super().format(record)
 
 
 def set_logger(level=logging.INFO):
     formatter = ColoredFormatter(
         '{color}[{levelname:.1s}] {message}{reset}',
-        style='{', datefmt='%Y-%m-%d %H:%M:%S',
+        style='{',
         colors={
             'DEBUG': Fore.CYAN,
             'INFO': Fore.GREEN,
@@ -61,70 +58,79 @@ def set_logger(level=logging.INFO):
     return logger
 
 
-perplexity = load("perplexity", module_type="metric")
+logger = set_logger(logging.INFO)
 
-log_level = logging.DEBUG
-logger = set_logger(level=log_level)
+def tokenize_all(texts, tokenizer, max_length, add_bos=True):
+    encodings = tokenizer(
+        texts,
+        truncation=True,
+        max_length=max_length - 1 if add_bos else max_length,
+        padding="max_length",
+        return_tensors="pt"
+    )
+    input_ids = encodings["input_ids"]
+    attention_mask = encodings["attention_mask"]
+    if add_bos:
+        bos = tokenizer.bos_token_id
+        bos_tokens = torch.full((input_ids.size(0), 1), bos)
+        input_ids = torch.cat([bos_tokens, input_ids[:, :-1]], dim=1)
+        attention_mask = torch.cat([torch.ones((attention_mask.size(0), 1)), attention_mask[:, :-1]], dim=1)
+    return input_ids, attention_mask
 
-def compute_probe_ppls(data_probe, model_name, batch_size):
+def compute_perplexity(texts, model, tokenizer, batch_size=512, max_length=32, device=None):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    input_ids, attention_mask = tokenize_all(texts, tokenizer, max_length, add_bos=True)
+    dataset = TensorDataset(input_ids, attention_mask)
+    dataloader = DataLoader(dataset, batch_size=batch_size, pin_memory=True)
+
+    loss_fct = CrossEntropyLoss(reduction="none")
+    perplexities = []
+
+    model.eval()
+    with torch.no_grad():
+        for input_ids, attention_mask in tqdm(dataloader, desc="Computing perplexity"):
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            labels = input_ids.clone()
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            shift_mask = attention_mask[..., 1:].contiguous()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            loss = loss.view(shift_labels.size()) * shift_mask
+            loss = loss.sum(1) / shift_mask.sum(1)
+            batch_ppl = torch.exp(loss)
+            perplexities.extend(batch_ppl.tolist())
+
+    return [round(p, 3) for p in perplexities]
+
+def compute_probe_ppls(data_probe, model, tokenizer, batch_size):
+    logger.info("Tokenizing input stereotypes...")
     input_texts = data_probe['probe'].tolist()
-    PPL = {}
-    LM = model_name
-    batch_perplexities_dict = {model_name: []}
-    for i in range(0, len(input_texts), batch_size):
-        input_text_batch = input_texts[i:i + batch_size]
-        batch_perplexities = perplexity.compute(model_id=model_name, predictions=input_text_batch)
-        batch_perplexities = batch_perplexities['perplexities']
-        batch_perplexities_dict[model_name].extend(batch_perplexities)
-        LM_filename = LM.replace('/', '-')
-        logger.info('Saved ' + str(i))
-        np.save(f'/batch_perplexities_{LM_filename}.npy', np.array(batch_perplexities_dict[LM]))
-        logger.debug('Saved perplexities for the batch #' + str(i))
-    PPL[model_name] = [round(x, 3) for x in batch_perplexities_dict[model_name]]
-    logger.debug('<----------------------> END of ' + LM + '\n')
-    df_w_PPL = pd.concat([data_probe, pd.DataFrame(PPL)], axis=1)
-    new_order = ['id', 'category', 'target', 'identity', 'stereotype', 'probe'] + [model_name]
-    df_w_PPL = df_w_PPL[new_order]
-    df_w_PPL.to_csv('SoFa-w-LMs-PPLs.csv', index=False)
-    logger.debug('Probe PPLs saved to' + ' SoFa-w-LMs-PPLs.csv')
-    return df_w_PPL
+    logger.info("Computing perplexities for probes...")
+    scores = compute_perplexity(input_texts, model, tokenizer, batch_size)
+    model_name_clean = model.name_or_path.replace('/', '-')
+    data_probe[model_name_clean] = scores
+    logger.info("Finished computing probe perplexities.")
+    return data_probe
 
-
-def compute_identity_ppls(identity_file, model_name):
-    logger.debug("Loading identities from " + str(identity_file))
+def compute_identity_ppls(identity_file, model, tokenizer, batch_size):
+    logger.info("Computing perplexities for identities...")
     with open(identity_file, "r") as f:
         data_dict = json.load(f)
-
-    PPL = {}
-    LMs = [model_name]
-    logger.debug("Computing identity PPL...")
+    model_name_clean = model.name_or_path.replace('/', '-')
     for key, value in data_dict.items():
-        for LM in LMs:
-            perplexities = perplexity.compute(model_id=LM, predictions=value)
-            perplexities = perplexities['perplexities']
-            PPL[LM] = [round(x, 3) for x in perplexities]
-            logger.debug('\n <----------------------> END of ' + LM + '\n')
-        logger.info('Concat PPLs for identity ' + key)
-        # raises an error if contains nans
-        identities_w_PPL = pd.DataFrame(list(zip(value, *PPL.values())), columns=["identity"] + list(PPL.keys()))
-        #identities_w_PPL = identities_w_PPL.rename(columns=LMs)
-        file_name = key + '-identities-w-PPLs.csv'
-        logger.debug('Saving identities_w_PPL to' + file_name)
-        identities_w_PPL.to_csv('./' + file_name, index=False)
-        logger.debug('\n\n <----------------------> END of ' + key + '\n\n')
-    return
+        scores = compute_perplexity(value, model, tokenizer, batch_size)
+        df = pd.DataFrame({"identity": value, model_name_clean: scores})
+        df.to_csv(f"{key}-identities-w-PPLs.csv", index=False)
+        logger.info(f"Saved identity PPLs to {key}-identities-w-PPLs.csv")
+    logger.info("Finished computing identity perplexities.")
 
-def download_sofa_dataset(probe_file):
-    ds = load_dataset("iproskurina/sofa-500")
-    df = pd.DataFrame(ds["train"])
-    os.makedirs(os.path.dirname(probe_file), exist_ok=True)
-    df.to_csv(probe_file, index=False)
-
-
-
-
-def compute_sofa_score(df_probes, model_name):
-
+def compute_sofa_score(df_probes, model):
+    model_name = model.name_or_path.replace('/', '-')
     LMs_columns = [model_name]
     df = df_probes
     path = './'
@@ -153,7 +159,7 @@ def compute_sofa_score(df_probes, model_name):
         # identity present in the probe
 
     df.sort_index(ascending=True, inplace=True)
-    df[LMs_columns] = df[LMs_columns].applymap(lambda x: np.log10(x))  # log10 of PPL*
+    df[LMs_columns] = df[LMs_columns].apply(lambda x: np.log10(x))  # log10 of PPL*
     df.to_csv(path + 'SoFa-w-LMs-Scores.csv', index=False)
 
     def rank_variance(df, aggregated=False, variances=None):
@@ -231,12 +237,16 @@ def compute_sofa_score(df_probes, model_name):
     rank_variance(df, True, variances)
     logger.info('\n\n\n\n ---- PER CATEGORY ----')
     data = []
+    cats_test = []
     for LM in LMs_columns:
         LM_variances = [LM]
         for category, variance in variances.items():
+            cats_test.append(category)
             LM_variances.append(variance[LM])
         data.append(LM_variances)
-    table2 = pd.DataFrame(data, columns=['Model', 'Culture', 'Gender', 'Disabled', 'Race'])
+    cats_test = [icat.capitalize() for icat in cats_test]
+    cols = ['Model'] + cats_test
+    table2 = pd.DataFrame(data, columns=cols)
     logger.info(table2)
     table2.to_csv(path + 'Table2.csv', index=False)
     logger.info("Saved Results to " + path + 'Table2.csv')
@@ -247,28 +257,40 @@ def main():
     parser.add_argument("--model_name", type=str, default="gpt2")
     parser.add_argument("--probe_file", type=str, default="data/sofa/SBIC-Pro.csv")
     parser.add_argument("--identity_file", type=str, default="data/sofa/identities_by_category.json")
-    # parser.add_argument("--identity_dir", type=str, default="data/sofa/identity_terms")
-    parser.add_argument("--output_file", type=str, default="data/sofa/SBIC-Pro-with-bias.csv")
-    parser.add_argument("--batch_size", type=int, default=100000)
-    parser.add_argument('--debug', action='store_true', help='Debug mode')
+    parser.add_argument("--batch_size", type=int, default=512)
+    parser.add_argument("--max_length", type=int, default=32)
+    parser.add_argument("--gptqmodel", action="store_true")
     args = parser.parse_args()
 
-    # 1 Compute PPL per stereotype
+    logger.info("Loading model and tokenizer...")
     if not os.path.exists(args.probe_file):
-        download_sofa_dataset(args.probe_file)
-    # log_level = logging.DEBUG if args.debug else logging.INFO
-    # logger = set_logger(level=log_level)
-    df = pd.read_csv(args.probe_file)
+        logger.info("Downloading SoFA dataset in memory...")
+        ds = load_dataset("copenlu/sofa")
+        df = pd.DataFrame(ds["train"])
+    else:
+        logger.info("Reading local probe file...")
+        df = pd.read_csv(args.probe_file)
+
+    if args.gptqmodel:
+        from gptqmodel import GPTQModel
+        model = GPTQModel.from_quantized(args.model_name, trust_remote_code=True)
+    else:
+        # half precision
+        model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16)
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    model = model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    tokenizer.pad_token = tokenizer.eos_token
+
     if os.path.exists('SoFa-w-LMs-PPLs.csv'):
-        df = pd.read_csv('SoFa-w-LMs-PPLs.csv') # to keep other LMs scores
-    model_name = args.model_name.replace('/', '-')
-    df_w_PPLs = compute_probe_ppls(data_probe=df, model_name=model_name, batch_size=args.batch_size)
-    # 3 Compute PPL per identity
-    compute_identity_ppls(identity_file=args.identity_file, model_name=model_name)
+        logger.info("Found file with computed PPLs...")
+        df = pd.read_csv('SoFa-w-LMs-PPLs.csv')
+    else:
+        df = compute_probe_ppls(df, model, tokenizer, args.batch_size)
+        df.to_csv('SoFa-w-LMs-PPLs.csv', index=False)
 
-    # 3 Compute global SoFA score and per stereotype group
-    compute_sofa_score(df_w_PPLs, model_name)
-
+    compute_identity_ppls(args.identity_file, model, tokenizer, args.batch_size)
+    compute_sofa_score(df, model)
 
 if __name__ == "__main__":
     main()
