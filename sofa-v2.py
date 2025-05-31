@@ -262,7 +262,7 @@ def main():
     parser.add_argument("--gptqmodel", action="store_true")
     args = parser.parse_args()
 
-    logger.info("Loading model and tokenizer...")
+
     if not os.path.exists(args.probe_file):
         logger.info("Downloading SoFA dataset in memory...")
         ds = load_dataset("copenlu/sofa")
@@ -270,7 +270,7 @@ def main():
     else:
         logger.info("Reading local probe file...")
         df = pd.read_csv(args.probe_file)
-
+    logger.info("Loading model and tokenizer...")
     if args.gptqmodel:
         from gptqmodel import GPTQModel
         model = GPTQModel.from_quantized(args.model_name, trust_remote_code=True)
