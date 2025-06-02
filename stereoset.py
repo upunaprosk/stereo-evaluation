@@ -700,7 +700,7 @@ parser.add_argument(
     "--persistent_dir",
     action="store",
     type=str,
-    default=os.path.realpath(os.path.join(thisdir, "..")),
+    default=os.path.realpath(os.path.join(thisdir, "./")),
     help="Directory where all persistent data will be stored.",
 )
 parser.add_argument(
