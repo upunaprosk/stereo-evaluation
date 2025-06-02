@@ -72,8 +72,11 @@ def compute_perplexity(texts, model, tokenizer, batch_size=512, max_length=32, d
 
 
 def compute_probe_ppls(data_probe, model, tokenizer, batch_size, output_path):
+    logger.info("Tokenizing input stereotypes...")
     texts = data_probe['probe'].tolist()
+    logger.info("Computing perplexities for probes...")
     scores = compute_perplexity(texts, model, tokenizer, batch_size)
+    logger.info("Finished computing probe perplexities.")
     model_name = model.name_or_path.replace('/', '-')
     data_probe[model_name] = scores
     data_probe.reset_index(drop=True).to_feather(os.path.join(output_path, 'SoFa-PPLs.feather'))
@@ -81,6 +84,7 @@ def compute_probe_ppls(data_probe, model, tokenizer, batch_size, output_path):
 
 
 def compute_identity_ppls(identity_file, model, tokenizer, batch_size, output_path):
+    logger.info("Computing perplexities for identities...")
     with open(identity_file, "r") as f:
         data_dict = json.load(f)
     model_name = model.name_or_path.replace('/', '-')
@@ -89,6 +93,8 @@ def compute_identity_ppls(identity_file, model, tokenizer, batch_size, output_pa
         pd.DataFrame({"identity": identities, model_name: scores}).to_feather(
             os.path.join(output_path, f"{category}-identities.feather")
         )
+        logger.info(f"Saved identity PPLs to {category}-identities-w-PPLs.csv")
+    logger.info("Finished computing identity perplexities.")
 
 
 def compute_sofa_score(df_probes, model, output_path):
