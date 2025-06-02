@@ -19,46 +19,11 @@ from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
-import logging
-import sys
-from colorama import Fore, Back, Style
 from tqdm import tqdm
-
-
-
-class ColoredFormatter(logging.Formatter):
-    def __init__(self, *args, colors=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.colors = colors if colors else {}
-
-    def format(self, record):
-        record.color = self.colors.get(record.levelname, '')
-        record.reset = Style.RESET_ALL
-        return super().format(record)
-
-
-def set_logger(level=logging.INFO):
-    formatter = ColoredFormatter(
-        '{color}[{levelname:.1s}] {message}{reset}',
-        style='{',
-        colors={
-            'DEBUG': Fore.CYAN,
-            'INFO': Fore.GREEN,
-            'WARNING': Fore.YELLOW,
-            'ERROR': Fore.RED,
-            'CRITICAL': Fore.RED + Back.WHITE + Style.BRIGHT,
-        }
-    )
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(formatter)
-    logger = logging.getLogger()
-    logger.handlers[:] = []
-    logger.addHandler(handler)
-    logger.setLevel(level)
-    return logger
-
+from utils import *
 
 logger = set_logger(logging.INFO)
+
 
 def tokenize_all(texts, tokenizer, max_length, add_bos=True):
     encodings = tokenizer(
@@ -76,6 +41,7 @@ def tokenize_all(texts, tokenizer, max_length, add_bos=True):
         input_ids = torch.cat([bos_tokens, input_ids[:, :-1]], dim=1)
         attention_mask = torch.cat([torch.ones((attention_mask.size(0), 1)), attention_mask[:, :-1]], dim=1)
     return input_ids, attention_mask
+
 
 def compute_perplexity(texts, model, tokenizer, batch_size=512, max_length=32, device=None):
     if device is None:
@@ -107,6 +73,7 @@ def compute_perplexity(texts, model, tokenizer, batch_size=512, max_length=32, d
 
     return [round(p, 3) for p in perplexities]
 
+
 def compute_probe_ppls(data_probe, model, tokenizer, batch_size):
     logger.info("Tokenizing input stereotypes...")
     input_texts = data_probe['probe'].tolist()
@@ -116,6 +83,7 @@ def compute_probe_ppls(data_probe, model, tokenizer, batch_size):
     data_probe[model_name_clean] = scores
     logger.info("Finished computing probe perplexities.")
     return data_probe
+
 
 def compute_identity_ppls(identity_file, model, tokenizer, batch_size):
     logger.info("Computing perplexities for identities...")
@@ -128,6 +96,7 @@ def compute_identity_ppls(identity_file, model, tokenizer, batch_size):
         df.to_csv(f"{key}-identities-w-PPLs.csv", index=False)
         logger.info(f"Saved identity PPLs to {key}-identities-w-PPLs.csv")
     logger.info("Finished computing identity perplexities.")
+
 
 def compute_sofa_score(df_probes, model):
     model_name = model.name_or_path.replace('/', '-')
@@ -252,6 +221,7 @@ def compute_sofa_score(df_probes, model):
     logger.info("Saved Results to " + path + 'Table2.csv')
     return
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="gpt2")
@@ -261,7 +231,6 @@ def main():
     parser.add_argument("--max_length", type=int, default=32)
     parser.add_argument("--gptqmodel", action="store_true")
     args = parser.parse_args()
-
 
     if not os.path.exists(args.probe_file):
         logger.info("Downloading SoFA dataset in memory...")
@@ -291,6 +260,7 @@ def main():
 
     compute_identity_ppls(args.identity_file, model, tokenizer, args.batch_size)
     compute_sofa_score(df, model)
+
 
 if __name__ == "__main__":
     main()

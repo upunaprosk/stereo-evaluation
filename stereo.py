@@ -27,7 +27,7 @@ class IntrasentenceLoader(object):
     def __init__(
             self,
             tokenizer,
-            max_seq_length=None,
+            max_seq_length=64,
             pad_to_max_length=False,
             input_file="../../data/bias.json",
             model_name_or_path=None,
