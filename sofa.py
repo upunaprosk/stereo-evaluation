@@ -230,7 +230,12 @@ def main():
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--max_length", type=int, default=32)
     parser.add_argument("--gptqmodel", action="store_true")
+    parser.add_argument("--seed",  type=int, default=42)
+
+
+
     args = parser.parse_args()
+    seed_everything(args.seed)
 
     if not os.path.exists(args.probe_file):
         logger.info("Downloading SoFA dataset in memory...")
