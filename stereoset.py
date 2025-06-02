@@ -757,6 +757,7 @@ parser.add_argument(
 )
 if __name__ == "__main__":
     args = parser.parse_args()
+    seed_everything(args.seed)
 
     experiment_id = generate_experiment_id(
         name="stereoset",
@@ -775,6 +776,9 @@ if __name__ == "__main__":
     logger.info(f" - cache_dir: {args.cache_dir}")
     logger.info(f" - is_gptqmodel: {args.is_quantized}")
     logger.info(f" - scoring filename: {args.persistent_dir}/data/stereoset/{args.file_name}")
+
+
+
     _is_generative_model = False
     if args.is_quantized:
         logger.debug(f"Loading GPTQModel..")
