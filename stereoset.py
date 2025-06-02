@@ -1,8 +1,18 @@
-import argparse
-import os
-import transformers
-
 from utils import *
+import transformers
+import argparse
+import sys
+from collections import Counter, OrderedDict
+import torch
+from collections import defaultdict
+from torch.utils.data import DataLoader
+import string
+from tqdm import tqdm
+import json
+import os
+import re
+import numpy as np
+
 
 
 def generate_experiment_id(
@@ -10,10 +20,7 @@ def generate_experiment_id(
     model=None,
     model_name_or_path=None,
     bias_type=None,
-    seed=None,
-    quant_type=None,
-    quant_prec=None,
-    revision=None,
+    seed=None
 ):
     experiment_id = f"{name}"
 
@@ -28,12 +35,6 @@ def generate_experiment_id(
         experiment_id += f"_t-{bias_type}"
     if isinstance(seed, int):
         experiment_id += f"_s-{seed}"
-    if isinstance(quant_type, str):
-        experiment_id += f"_qt-{quant_type}"
-    if isinstance(quant_prec, str):
-        experiment_id += f"_qp-{quant_prec}"
-    if isinstance(revision, str):
-        experiment_id += f"_rev-{revision}"
 
     # filter out pythia extra strs
     experiment_id = experiment_id.replace('EleutherAI_', '')
@@ -64,19 +65,6 @@ def _is_self_debias(model):
         "SelfDebiasLLAMALMHeadModel",
         "SelfDebiasOPTLMHeadModel",
     ]
-
-
-
-
-import numpy as np
-import torch
-
-from collections import defaultdict
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-import json
-import string
-from tqdm import tqdm
 
 
 class IntrasentenceLoader(object):
@@ -536,16 +524,6 @@ class StereoSetRunner:
         return idxs
 
 
-import argparse
-import sys
-from collections import Counter, OrderedDict, defaultdict
-import glob
-import json
-import os
-import re
-
-import numpy as np
-
 
 
 class ScoreEvaluator:
@@ -757,35 +735,9 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--quant_prec",
-    action="store",
-    type=str,
-    #default="fp16",
-    default=None,
-    help="Choose quantization precision (e.g., fp16, int8)."
-)
-parser.add_argument(
     "--is_quantized",
     action="store_true",
     help="Whether the model was quantized with GPTQ."
-)
-
-parser.add_argument(
-    "--quant_type",
-    action="store",
-    type=str,
-    #default=DYNAMIC,
-    default=None,
-    help="Choose type of quantization (e.g., dynamic, static)."
-)
-
-parser.add_argument(
-    "--revision",
-    action="store",
-    type=str,
-    #default=DYNAMIC,
-    default=None,
-    help="Pythia checkpoint revision e.g. step3000"
 )
 
 parser.add_argument(
@@ -810,9 +762,7 @@ if __name__ == "__main__":
         name="stereoset",
         model=args.model,
         model_name_or_path=args.model_name_or_path,
-        seed=args.seed,
-        quant_type=args.quant_type, quant_prec=args.quant_prec,
-        revision=args.revision,
+        seed=args.seed
     )
     logger = set_logger(logging.INFO)
 
