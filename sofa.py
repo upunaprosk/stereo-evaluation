@@ -126,7 +126,7 @@ def compute_sofa_score(df_probes, model, output_path):
     with open(os.path.join(output_path, f"{model_name}-SoFa-Summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
-    logger.info(summary)
+    logger.info(json.dumps(summary, indent=2))
     logger.info("Saved Results to " + f"{model_name}-SoFa-Summary.json")
 
 
