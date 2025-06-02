@@ -730,7 +730,7 @@ parser.add_argument(
     "--seed",
     action="store",
     type=int,
-    default=None,
+    default=42,
     help="RNG seed. Used for logging in experiment ID.",
 )
 
@@ -748,20 +748,13 @@ parser.add_argument(
     default=None,
     help="Pythia model cache directory e.g. /home/username/.cache/pythia"
 )
-parser.add_argument(
-    "--file_name",
-    action="store",
-    type=str,
-    default="test.json",
-    help="Filename for evaluation.",
-)
+
 if __name__ == "__main__":
     args = parser.parse_args()
     seed_everything(args.seed)
 
     experiment_id = generate_experiment_id(
         name="stereoset",
-        model=args.model,
         model_name_or_path=args.model_name_or_path,
         seed=args.seed
     )
@@ -772,7 +765,6 @@ if __name__ == "__main__":
     logger.info(f" - model_name_or_path: {args.model_name_or_path}")
     logger.info(f" - batch_size: {args.batch_size}")
     logger.info(f" - seed: {args.seed}")
-    logger.info(f" - revision: {args.revision}")
     logger.info(f" - cache_dir: {args.cache_dir}")
     logger.info(f" - is_gptqmodel: {args.is_quantized}")
     logger.info(f" - scoring filename: {args.persistent_dir}/data/stereoset/{args.file_name}")
