@@ -54,3 +54,47 @@ Dataset: [copenlu/sofa](https://huggingface.co/datasets/copenlu/sofa)
 | `--max_length`      | int    | `32`                                   | Maximum input sequence length. |
 | `--gptqmodel`       | flag   | `False`                                | Use GPTQ quantized model if set. |
 
+
+## HolisticBias
+
+The `holistic-bias.py` script runs evaluation on [HolisticBias v1.1](https://github.com/facebookresearch/ResponsibleNLP/tree/main/holistic_bias). To run the script, first download the dataset (v1.1):  
+  
+   ```
+   git clone https://github.com/facebookresearch/ResponsibleNLP.git
+   cd ResponsibleNLP
+   pip install .
+   pip install -r holistic_bias/requirements.txt
+   pip install numpy==1.26.4  # optional for compatibility
+   python ./holistic_bias/generate_sentences.py "./data/holistic_bias/" --dataset-version "v1.1"
+
+```
+
+If run in colab :
+
+```
+import os
+os.environ["PYTHONPATH"] = "/content/ResponsibleNLP/:" + os.environ.get("PYTHONPATH", "")
+```
+
+### Usage example
+
+```
+python holistic_bias/run_bias_calculation.py \
+    --model_name gpt2 \
+    --dataset_path ./data/holistic_bias/v1.1/ \
+    --output_dir ./results/HolisticBias-Output
+
+```
+### Arguments
+
+| Argument             | Type   | Default                                   | Description |
+|----------------------|--------|-------------------------------------------|-------------|
+| `--model_name`       | str    | `"gpt2"`                                  | HuggingFace model name or path. |
+| `--dataset_path`     | str    | `"data/holistic_bias/"`              | Path to the dataset |
+| `--output_dir`       | str    | `"results/HolisticBias-Output"`           | Output directory to save results. |
+| `--batch_size`       | int    | `512`                                     | Batch size for perplexity computation. |
+| `--max_length`       | int    | `32`                                      | Maximum length of input sequences. |
+| `--gptqmodel`        | flag   | `False`                                   | Use a GPTQ quantized model if set. |
+| `--seed`             | int    | `42`                                      | Random seed for reproducibility. |
+
+
