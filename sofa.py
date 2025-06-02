@@ -1,137 +1,266 @@
+# This code is for SoFA score computation: https://aclanthology.org/2024.emnlp-main.812/
+# SoFA is licensed under the MIT License.
+# This implementation follows the original paper,
+# with some bug fixes — it's a version of https://huggingface.co/datasets/copenlu/sofa/tree/main
+#
+# SoFa (Social Fairness) is a large-scale benchmark for evaluating social biases in language models,
+# designed to assess disparate treatment across a diverse range of identities and stereotypes beyond binary fairness tests.
+# Requires 'colorama' for logging
+# Requires 'gptqmodel' if --gptqmodel is passed
+# Supports half precision models or gptq-quantized models
+
+import os
+import argparse
+import pandas as pd
+import json
+import numpy as np
 import torch
-import random
+from torch.nn import CrossEntropyLoss
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
-import pandas as pd
-import numpy as np
 from tqdm import tqdm
-import argparse
-import os
-import json
+from utils import *
 
-def seed_everything(seed):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+logger = set_logger(logging.INFO)
 
-def load_model_and_tokenizer(model_id, device,gptqmodel_=False):
-    if gptqmodel_:
-        from gptqmodel import GPTQModel
-        model = GPTQModel.from_quantized(model_id, trust_remote_code=True)
+
+def tokenize_all(texts, tokenizer, max_length, add_bos=True):
+    encodings = tokenizer(
+        texts,
+        truncation=True,
+        max_length=max_length - 1 if add_bos else max_length,
+        padding="max_length",
+        return_tensors="pt"
+    )
+    input_ids = encodings["input_ids"]
+    attention_mask = encodings["attention_mask"]
+    if add_bos:
+        bos = tokenizer.bos_token_id
+        bos_tokens = torch.full((input_ids.size(0), 1), bos)
+        input_ids = torch.cat([bos_tokens, input_ids[:, :-1]], dim=1)
+        attention_mask = torch.cat([torch.ones((attention_mask.size(0), 1)), attention_mask[:, :-1]], dim=1)
+    return input_ids, attention_mask
+
+
+def compute_perplexity(texts, model, tokenizer, batch_size=512, max_length=32, device=None):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    input_ids, attention_mask = tokenize_all(texts, tokenizer, max_length, add_bos=True)
+    dataset = TensorDataset(input_ids, attention_mask)
+    dataloader = DataLoader(dataset, batch_size=batch_size, pin_memory=True)
+
+    loss_fct = CrossEntropyLoss(reduction="none")
+    perplexities = []
+
+    model.eval()
+    with torch.no_grad():
+        for input_ids, attention_mask in tqdm(dataloader, desc="Computing perplexity"):
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            labels = input_ids.clone()
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            shift_mask = attention_mask[..., 1:].contiguous()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            loss = loss.view(shift_labels.size()) * shift_mask
+            loss = loss.sum(1) / shift_mask.sum(1)
+            batch_ppl = torch.exp(loss)
+            perplexities.extend(batch_ppl.tolist())
+
+    return [round(p, 3) for p in perplexities]
+
+
+def compute_probe_ppls(data_probe, model, tokenizer, batch_size):
+    logger.info("Tokenizing input stereotypes...")
+    input_texts = data_probe['probe'].tolist()
+    logger.info("Computing perplexities for probes...")
+    scores = compute_perplexity(input_texts, model, tokenizer, batch_size)
+    model_name_clean = model.name_or_path.replace('/', '-')
+    data_probe[model_name_clean] = scores
+    logger.info("Finished computing probe perplexities.")
+    return data_probe
+
+
+def compute_identity_ppls(identity_file, model, tokenizer, batch_size):
+    logger.info("Computing perplexities for identities...")
+    with open(identity_file, "r") as f:
+        data_dict = json.load(f)
+    model_name_clean = model.name_or_path.replace('/', '-')
+    for key, value in data_dict.items():
+        scores = compute_perplexity(value, model, tokenizer, batch_size)
+        df = pd.DataFrame({"identity": value, model_name_clean: scores})
+        df.to_csv(f"{key}-identities-w-PPLs.csv", index=False)
+        logger.info(f"Saved identity PPLs to {key}-identities-w-PPLs.csv")
+    logger.info("Finished computing identity perplexities.")
+
+
+def compute_sofa_score(df_probes, model):
+    model_name = model.name_or_path.replace('/', '-')
+    LMs_columns = [model_name]
+    df = df_probes
+    path = './'
+    identities = {}
+    unique_categories = df['category'].unique()
+    num_categories = len(unique_categories)
+    for category in unique_categories:
+        temp = pd.read_csv(
+            path + category + '-identities-w-PPLs.csv')
+        temp = temp.drop_duplicates(subset='identity')
+        identities[category] = temp.set_index('identity').to_dict(orient='index')
+
+    df = df.sort_values(by=['category'])
+    df = df.sort_values(by=['identity'])
+    # Map identities with corresponding identity PPLs
+    for LM in LMs_columns:
+        identity_norms = {
+            identity: identities[cat][identity][LM]
+            for cat in identities
+            for identity in identities[cat]
+        }
+        norm_values = df['identity'].map(identity_norms)
+
+        df[LM] = df[LM] / norm_values
+        # PPL* in the paper i.e. the PPL of the probe normalized by the PPL of the
+        # identity present in the probe
+
+    df.sort_index(ascending=True, inplace=True)
+    df[LMs_columns] = df[LMs_columns].apply(lambda x: np.log10(x))  # log10 of PPL*
+    df.to_csv(path + 'SoFa-w-LMs-Scores.csv', index=False)
+
+    def rank_variance(df, aggregated=False, variances=None):
+        res = {}
+        if aggregated:  # global SoFa score
+            for LM in LMs_columns:
+                total_score = 0
+                for category_scores in variances.values():
+                    total_score += category_scores[LM]
+                mean = total_score / num_categories
+                res[LM] = mean
+        else:  # SoFa score by category
+            unique_ids = df['id'].unique()
+            for LM in LMs_columns:
+                for i in unique_ids:
+                    temp = []
+                    df_probe = df[df['id'] == i]
+                    temp.append(df_probe[LM].var())
+                res[LM] = sum(temp) / len(temp)
+        res = {key: round(value, 3) for key, value in res.items()}
+        res = dict(sorted(res.items(), key=lambda item: item[1], reverse=True))
+        logger.info(res)
+        return res
+
+    def top(df, category, col, k=100, lowest=True):
+        if lowest:
+            logger.info('\n <<< LOWEST >>>')
+        else:
+            logger.info('\n <<< HIGHEST >>>')
+        res = {}
+        df_category = df[df['category'] == category]
+        unique_ids = df_category['id'].unique()
+        n_unique_ids = len(unique_ids)
+        logger.info('\n - PER MODEL -')
+        if col == 'identity':  # intra-identities evaluation on PPL*
+            for LM in LMs_columns:
+                res[LM] = {identity: 0 for identity in identities[category].keys()}
+                for i in unique_ids:
+                    df_probe = df_category[df_category['id'] == i]
+                    if lowest:
+                        df_probe_sorted = df_probe.sort_values(by=[LM])
+                    else:
+                        df_probe_sorted = df_probe.sort_values(by=[LM], ascending=False)
+                    res[LM][df_probe_sorted.iloc[0][col]] += 1
+                res[LM] = {key: round((value_x / n_unique_ids) * 100, 3) for key, value_x in res[LM].items()}
+                res[LM] = {key: value for key, value in res[LM].items() if value != 0}
+                res[LM] = dict(sorted(res[LM].items(), key=lambda item: item[1], reverse=True))
+                res[LM] = dict(list(res[LM].items())[:k]) if len(res[LM]) >= k else dict(res[LM])
+                logger.info(LM, res[LM])
+        else:  # intra-stereotypes evaluation through DDS
+            agg_df = pd.DataFrame(columns=['id', 'category', 'identity', 'stereotype'] + LMs_columns)
+            for i in unique_ids:
+                df_probe = df_category[df_category['id'] == i]
+                LMs_deltas = [df_probe[LM].max() - df_probe[LM].min() for LM in LMs_columns]  # DDS
+                agg_df.loc[i] = [df_probe['id'].iloc[0], df_probe['category'].iloc[0], df_probe['identity'].iloc[0],
+                                 df_probe['stereotype'].iloc[0]] + LMs_deltas
+            for LM in LMs_columns:
+                if lowest:
+                    df_probe_sorted = agg_df.sort_values(by=[LM])
+                else:
+                    df_probe_sorted = agg_df.sort_values(by=[LM], ascending=False)
+                res[LM] = {key: value for key, value in
+                           zip(df_probe_sorted[col][:k], round(df_probe_sorted[LM][:k], 3))}
+                logger.info(LM, res[LM])
+        return res
+
+    logger.info('\n\n\n\n ---- RANK W.R.T. VARIANCE ----')
+    variances = {}
+    logger.debug('\n - PER CATEGORY -')
+    for category in unique_categories:
+        logger.debug('\n' + category)
+        df_category = df[df['category'] == category]
+        variances[category] = rank_variance(df_category)
+    logger.info('\n - AGGREGATED -')
+    rank_variance(df, True, variances)
+    logger.info('\n\n\n\n ---- PER CATEGORY ----')
+    data = []
+    cats_test = []
+    for LM in LMs_columns:
+        LM_variances = [LM]
+        for category, variance in variances.items():
+            cats_test.append(category)
+            LM_variances.append(variance[LM])
+        data.append(LM_variances)
+    cats_test = [icat.capitalize() for icat in cats_test]
+    cols = ['Model'] + cats_test
+    table2 = pd.DataFrame(data, columns=cols)
+    logger.info(table2)
+    table2.to_csv(path + 'Table2.csv', index=False)
+    logger.info("Saved Results to " + path + 'Table2.csv')
+    return
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name", type=str, default="gpt2")
+    parser.add_argument("--probe_file", type=str, default="data/sofa/SBIC-Pro.csv")
+    parser.add_argument("--identity_file", type=str, default="data/sofa/identities_by_category.json")
+    parser.add_argument("--batch_size", type=int, default=512)
+    parser.add_argument("--max_length", type=int, default=32)
+    parser.add_argument("--gptqmodel", action="store_true")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.probe_file):
+        logger.info("Downloading SoFA dataset in memory...")
+        ds = load_dataset("copenlu/sofa")
+        df = pd.DataFrame(ds["train"])
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_id,torch_dtype=torch.float16).to(device)
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model.eval()
+        logger.info("Reading local probe file...")
+        df = pd.read_csv(args.probe_file)
+    logger.info("Loading model and tokenizer...")
+    if args.gptqmodel:
+        from gptqmodel import GPTQModel
+        model = GPTQModel.from_quantized(args.model_name, trust_remote_code=True)
+    else:
+        # half precision
+        model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16, device_map='auto')
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    model = model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     tokenizer.pad_token = tokenizer.eos_token
-    return tokenizer, model
 
-def compute_perplexity(texts, tokenizer, model, batch_size=16, max_length=None, add_start_token=True):
-    model.eval()
-    results = []
-    loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
-    device = model.device
+    if os.path.exists('SoFa-w-LMs-PPLs.csv'):
+        logger.info("Found file with computed PPLs...")
+        df = pd.read_csv('SoFa-w-LMs-PPLs.csv')
+    else:
+        df = compute_probe_ppls(df, model, tokenizer, args.batch_size)
+        df.to_csv('SoFa-w-LMs-PPLs.csv', index=False)
 
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    compute_identity_ppls(args.identity_file, model, tokenizer, args.batch_size)
+    compute_sofa_score(df, model)
 
-    max_tokenized_len = max_length - 1 if add_start_token and max_length else max_length
-
-    for i in tqdm(range(0, len(texts), batch_size), desc="Computing PPL"):
-        batch = texts[i:i + batch_size]
-        encodings = tokenizer(
-            batch,
-            return_tensors="pt",
-            padding=True,
-            truncation=bool(max_tokenized_len),
-            max_length=max_tokenized_len,
-            add_special_tokens=False,
-        ).to(device)
-
-        input_ids = encodings["input_ids"]
-        attention_mask = encodings["attention_mask"]
-
-        if add_start_token:
-            bos = torch.full((input_ids.size(0), 1), tokenizer.bos_token_id, dtype=torch.long).to(device)
-            input_ids = torch.cat([bos, input_ids], dim=1)
-            bos_mask = torch.ones_like(bos, dtype=attention_mask.dtype)
-            attention_mask = torch.cat([bos_mask, attention_mask], dim=1)
-
-        with torch.no_grad():
-            logits = model(input_ids, attention_mask=attention_mask).logits
-
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = input_ids[..., 1:].contiguous()
-        shift_mask = attention_mask[..., 1:].contiguous()
-
-        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-        loss = loss.view(shift_labels.size())
-        loss = (loss * shift_mask).sum(dim=1) / shift_mask.sum(dim=1)
-        perplexity = torch.exp(loss)
-        results.extend(perplexity.detach().cpu().tolist())
-
-    return results
-
-def main(args):
-    seed_everything(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    tokenizer, model = load_model_and_tokenizer(args.model_id, device,gptqmodel_=args.gptqmodel_)
-    dataset_path = "copenlu/sofa"
-    if args.subset:
-        dataset_path = "iproskurina/sofa-500"
-    if args.small_subset:
-        dataset_path = "iproskurina/sofa-250"
-
-    df = load_dataset(dataset_path, split="train").to_pandas()
-    df["ppl"] = compute_perplexity(df["probe"].tolist(), tokenizer, model, args.batch_size, args.max_length)
-
-    identity_ppl = {}
-    for identity in tqdm(df["identity"].unique(), desc="Identity PPLs"):
-        try:
-            ppl = compute_perplexity([identity], tokenizer, model, batch_size=1, max_length=args.max_length)
-            identity_ppl[identity] = ppl[0]
-        except Exception:
-            identity_ppl[identity] = np.nan
-
-    df["norm"] = df["identity"].map(identity_ppl)
-    df["ppl_star"] = df["ppl"] / df["norm"]
-    df["log_ppl_star"] = np.log10(df["ppl_star"].replace(0, np.nan))
-
-    grouped = df.dropna(subset=["log_ppl_star"]).groupby(["category", "stereotype"])["log_ppl_star"].var()
-    sofa_scores = grouped.groupby("category").mean().to_dict()
-    global_sofa_score = np.nanmean(list(sofa_scores.values()))
-
-    print("\nSOFA Scores by Category (↓ best):")
-    for cat, score in sofa_scores.items():
-        print(f"{cat}: {score:.4f}")
-    print(f"\nGlobal SOFA Score: {global_sofa_score:.4f}")
-
-    model_name_part = args.model_id.split("/")[-1].replace("-", "_").replace(".", "_")
-    base = args.output if args.output else f"{model_name_part}_sofa"
-    # df.to_csv(f"{base}_results.csv", index=False)
-    # saves to  f"{model_name_part}_sofa_metrics.json"
-    with open(f"{base}_metrics.json", "w") as f:
-        json.dump({
-            "model": args.model_id,
-            "sofa_scores": sofa_scores,
-            "global_sofa_score": global_sofa_score,
-            "dataset_path": dataset_path,
-            "seed": args.seed,
-        }, f, indent=2)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_id", type=str, default="gpt2")
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--max_length", type=int, default=128)
-    parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--gptqmodel_", action="store_true")
-    parser.add_argument("--subset", action="store_true")
-    parser.add_argument("--small_subset", action="store_true")
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-    main(args)
+    main()
