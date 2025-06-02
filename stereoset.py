@@ -790,7 +790,7 @@ if __name__ == "__main__":
         model = transformers.AutoModelForMaskedLM.from_pretrained(args.model_name_or_path)
     else:
         logger.debug(f"Loading causal model..")
-        model = transformers.AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
+        model = transformers.AutoModelForCausalLM.from_pretrained(args.model_name_or_path, torch_dtype=torch.float16)
         _is_generative_model = True
     model.eval()
     tokenizer = transformers.AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=True)
