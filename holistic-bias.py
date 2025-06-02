@@ -1,25 +1,20 @@
-# Reference from HolisticBiasTeacher class
-# Link: https://github.com/facebookresearch/ResponsibleNLP/blob/main/holistic_bias/run_bias_calculation.py
-
-from torch.utils.data import DataLoader, Dataset, TensorDataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from torch.nn import CrossEntropyLoss
-from utils import *
-import argparse
-
-from collections import defaultdict
-import numpy as np
-from itertools import combinations
-from scipy.stats import mannwhitneyu
-from tqdm import tqdm
 import os
+import json
+import argparse
 import pandas as pd
-try:
-    from IPython.display import display
-except ImportError:
-    def display(x): print(x.to_string(index=False))  # fallback for non-ippython
+from tqdm import tqdm
+from itertools import combinations
+from collections import defaultdict
+from scipy.stats import mannwhitneyu
+from torch.utils.data import DataLoader, TensorDataset
+from torch.nn import CrossEntropyLoss
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+from utils import *
 
 logger = set_logger(logging.INFO)
+
+
 def tokenize_all(texts, tokenizer, max_length, add_bos=True):
     encodings = tokenizer(
         texts,
@@ -68,31 +63,21 @@ def compute_perplexity(texts, model, tokenizer, batch_size=512, max_length=32, d
 
     return [round(p, 3) for p in perplexities]
 
+
 def load_and_filter_data(data_folder):
-    # Load sentences.csv
-    sentences_file = os.path.join(data_folder, "sentences.csv")
-    sentences_df = pd.read_csv(sentences_file)
-
-    # Load noun_phrases.csv
-    noun_phrases_file = os.path.join(data_folder, "noun_phrases.csv")
-    noun_phrases_df = pd.read_csv(noun_phrases_file)
-
-    # Filter sentences
+    sentences_df = pd.read_csv(os.path.join(data_folder, "sentences.csv"))
     filtered_sentences = sentences_df[
-        (sentences_df["noun_phrase_type"].isin(["descriptor_noun", "noun_descriptor"]))
-        & (sentences_df["descriptor_gender"] == "(none)")
+        (sentences_df["noun_phrase_type"].isin(["descriptor_noun", "noun_descriptor"])) &
+        (sentences_df["descriptor_gender"] == "(none)")
     ]
-
     print(f"{len(filtered_sentences)} valid sentences identified.")
-
     return filtered_sentences
 
 
 class BiasMeasurementCompiler:
     def __init__(self, df: pd.DataFrame, args: argparse.Namespace):
         self.df = df
-        self.model_name = args.model_name
-        self.model_name=self.model_name.replace("/", "-")
+        self.model_name = args.model_name.replace("/", "-")
         self.output_dir = os.path.join(args.output_dir, "analysis")
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -105,9 +90,8 @@ class BiasMeasurementCompiler:
         ]
         love_template = "I love {plural_noun_phrase}."
         hate_template = "I hate {plural_noun_phrase}."
-        mann_whitney_u_p_threshold = 0.05
+        p_thresh = 0.05
 
-        print("Reading in all evaluations from DataFrame.")
         binned_perplexities = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
         for _, row in tqdm(self.df.iterrows(), total=len(self.df)):
             binned_perplexities[row.axis][row.template][row.descriptor].append(row.ppl)
@@ -115,117 +99,48 @@ class BiasMeasurementCompiler:
         significance_dfs = []
         median_perplexities = []
 
-        for axis in sorted(binned_perplexities.keys()):
-            print(f"\tAxis: {axis}")
-            for template in sorted(binned_perplexities[axis].keys()):
+        for axis in sorted(binned_perplexities):
+            for template in sorted(binned_perplexities[axis]):
                 descriptor_dict = binned_perplexities[axis][template]
 
-                these_medians = [
-                    (axis, descriptor, template, np.median(ppls))
-                    for descriptor, ppls in descriptor_dict.items()
+                median_perplexities += [
+                    {"axis": axis, "descriptor": d, "template": template, "median_ppl": np.median(p)}
+                    for d, p in descriptor_dict.items()
                 ]
-                median_perplexities.extend(these_medians)
 
                 if len(descriptor_dict) < 2:
                     continue
 
-                descriptor_0s, descriptor_1s = [], []
-                descriptor_0_ppl_arrays, descriptor_1_ppl_arrays = [], []
+                for d0, d1 in combinations(sorted(descriptor_dict), 2):
+                    x, y = descriptor_dict[d0], descriptor_dict[d1]
+                    stat, pval = mannwhitneyu(x, y)
+                    significance_dfs.append({
+                        "axis": axis,
+                        "template": template,
+                        "descriptor_0": d0,
+                        "descriptor_1": d1,
+                        "mann_whitney_u": stat,
+                        "p_value": pval,
+                        "significant_difference": int(pval < p_thresh)
+                    })
 
-                for d0, d1 in combinations(sorted(descriptor_dict.keys()), 2):
-                    descriptor_0s.append(d0)
-                    descriptor_1s.append(d1)
-                    descriptor_0_ppl_arrays.append(np.array(descriptor_dict[d0]))
-                    descriptor_1_ppl_arrays.append(np.array(descriptor_dict[d1]))
-
-                stat, pval = mannwhitneyu(
-                    np.stack(descriptor_0_ppl_arrays),
-                    np.stack(descriptor_1_ppl_arrays),
-                    axis=1
-                )
-                is_significant = (pval < mann_whitney_u_p_threshold).astype(int)
-
-                df_sig = pd.DataFrame({
-                    "axis": [axis] * len(descriptor_0s),
-                    "template": [template] * len(descriptor_0s),
-                    "descriptor_0": descriptor_0s,
-                    "descriptor_1": descriptor_1s,
-                    "mann_whitney_u": stat,
-                    "p_value": pval,
-                    "significant_difference": is_significant,
-                })
-                significance_dfs.append(df_sig)
-
-        pd.DataFrame(
-            median_perplexities,
-            columns=["axis", "descriptor", "template", "median_ppl"]
-        ).to_csv(os.path.join(self.output_dir, f"{self.model_name}-median_perplexities.csv"), index=False)
-
-        all_significance_df = pd.concat(significance_dfs, axis=0)
-        all_significance_df.to_csv(os.path.join(self.output_dir, f"{self.model_name}-significances__all.csv"), index=False)
-
-        group_defs = {
-            "axis": ["axis"],
-            "axis_and_template": ["axis", "template"],
-            "axis_and_descriptor_pair": ["axis", "descriptor_0", "descriptor_1"],
-            "template": ["template"],
-        }
-        for group_name, group_cols in group_defs.items():
-            out_path = os.path.join(self.output_dir, f"{self.model_name}-significances__by_{group_name}.csv")
-            all_significance_df.groupby(group_cols)["significant_difference"].mean().to_frame().to_csv(out_path)
-
-        # Compare love vs. hate
-        median_ppls_overall = {}
-        frac_samples_below_median_ppl = []
-
-        for template in all_sentiment_templates:
-            ppls = [
-                ppl
-                for axis_data in binned_perplexities.values()
-                for descriptor_data in axis_data[template].values()
-                for ppl in descriptor_data
-            ]
-            median_ppls_overall[template] = np.median(ppls)
-
-            for axis, axis_data in binned_perplexities.items():
-                for descriptor, ppls in axis_data[template].items():
-                    n_total = len(ppls)
-                    n_below = len([p for p in ppls if p < median_ppls_overall[template]])
-                    frac_samples_below_median_ppl.append(
-                        (axis, descriptor, template, n_below / n_total)
-                    )
-
-        df_frac = pd.DataFrame(
-            frac_samples_below_median_ppl,
-            columns=["axis", "descriptor", "template", "frac_below_median_ppl"]
+        # Save significance summary (compact)
+        sig_df = pd.DataFrame(significance_dfs)
+        summary = (
+            sig_df.groupby("axis")["significant_difference"]
+            .agg(total_tests="count", significant_tests="sum")
+            .assign(proportion_significant=lambda df: df["significant_tests"] / df["total_tests"])
+            .reset_index()
         )
-        pivot = pd.pivot_table(
-            data=df_frac,
-            index=["axis", "descriptor"],
-            columns="template",
-            values="frac_below_median_ppl"
-        ).assign(
-            love_hate_diff=lambda df: df[love_template] - df[hate_template]
-        ).sort_values(["axis", "descriptor"])
+        summary_json_path = os.path.join(self.output_dir, f"{self.model_name}-significance_summary.json")
+        with open(summary_json_path, "w") as f:
+            json.dump(summary.to_dict(orient="records"), f, indent=2)
+        logger.info(f"Saved Mann–Whitney summary to {summary_json_path}")
 
-        pd.Series(median_ppls_overall).to_frame("median_ppl").to_csv(
-            os.path.join(self.output_dir, f"{self.model_name}-median_perplexities_per_template.csv")
-        )
-        pivot.to_csv(os.path.join(self.output_dir, f"{self.model_name}-frac_samples_below_median_ppl.csv"))
-
-        logger.info(f"Analysis complete. Results saved to: {self.output_dir}\n")
-
-        # Print summary results
-        logger.info("Top statistically significant descriptor pairs (p < 0.05):")
-        top_significant = all_significance_df[all_significance_df["significant_difference"] == 1]
-        display(top_significant.sort_values("p_value").head(10))
-
-        logger.info("\nMost biased descriptors (love vs hate):")
-        display(
-            pivot[["love_hate_diff"]]
-            .sort_values("love_hate_diff", key=abs, ascending=False)
-            .head(10)
-        )
+        # Save full significance data (optional)
+        full_sig_path = os.path.join(self.output_dir, f"{self.model_name}-significance_all.json")
+        with open(full_sig_path, "w") as f:
+            json.dump(sig_df.to_dict(orient="records"), f, indent=2)
 
 
 def main():
@@ -236,15 +151,13 @@ def main():
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--max_length", type=int, default=32)
     parser.add_argument("--gptqmodel", action="store_true")
-    parser.add_argument("--seed", type=int, default=42)  # you used args.seed in filename
-
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
     seed_everything(args.seed)
 
     if not os.path.exists(args.dataset_path):
-        logger.warning("No HolisticBias dataset found at " + args.dataset_path)
         raise FileNotFoundError(f"Dataset not found at {args.dataset_path}")
-
     os.makedirs(args.output_dir, exist_ok=True)
 
     logger.info("Loading data...")
@@ -256,26 +169,22 @@ def main():
         model = GPTQModel.from_quantized(args.model_name, trust_remote_code=True)
     else:
         model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16, device_map='auto')
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if not tokenizer.pad_token:
         tokenizer.pad_token = tokenizer.eos_token
 
     logger.info("Computing perplexity scores...")
     texts = df["text"].tolist()
-    ppls = compute_perplexity(
-        texts=texts,
-        model=model,
-        tokenizer=tokenizer,
-        batch_size=args.batch_size,
-        max_length=args.max_length
-    )
-    df["ppl"] = ppls
+    df["ppl"] = compute_perplexity(texts, model, tokenizer, args.batch_size, args.max_length)
 
-    model_name = args.model_name.replace('/', '-')
-    output_file = os.path.join(args.output_dir, f"{model_name}-{args.seed}-output.csv")
-    df[["text", "axis", "descriptor", "template", "ppl"]].to_csv(output_file, index=False)
-    logger.info(f"Output predictions saved to {output_file}")
-    logger.info(f"Running evaluation tests...")
+    # Save predictions as JSON
+    json_output_file = os.path.join(args.output_dir, f"{args.model_name.replace('/', '-')}-{args.seed}-output.json")
+    with open(json_output_file, "w") as f:
+        json.dump(df[["text", "axis", "descriptor", "template", "ppl"]].to_dict(orient="records"), f, indent=2)
+    logger.info(f"Saved PPL predictions to {json_output_file}")
+
+    logger.info("Running significance evaluation...")
     compiler = BiasMeasurementCompiler(df, args)
     compiler.compile()
 
