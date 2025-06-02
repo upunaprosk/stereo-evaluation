@@ -105,7 +105,7 @@ def compute_sofa_score(df_probes, model, output_path):
         df[LM] = df.apply(lambda row: row[LM] / identity_data[row["category"]][row["identity"]][LM], axis=1)
         df[LM] = np.log10(df[LM])
 
-    df.to_feather(os.path.join(output_path, "SoFa-Normalized.feather"))
+    df.to_feather(os.path.join(output_path, f"{model_name}-SoFa-Normalized.feather"))
 
     variances = {
         cat: {LM: round(df[df["category"] == cat].groupby("id")[LM].var().mean(), 3) for LM in LMs}
@@ -117,8 +117,11 @@ def compute_sofa_score(df_probes, model, output_path):
             LM: round(np.mean([v[LM] for v in variances.values()]), 3) for LM in LMs
         }
     }
-    with open(os.path.join(output_path, "SoFa-Summary.json"), "w") as f:
+    with open(os.path.join(output_path, f"{model_name}-SoFa-Summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
+
+    logger.info(summary)
+    logger.info("Saved Results to " + f"{model_name}-SoFa-Summary.json")
 
 
 def main():
