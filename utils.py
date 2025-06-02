@@ -1,4 +1,3 @@
-import logging
 import sys
 from colorama import Fore, Back, Style
 import random
