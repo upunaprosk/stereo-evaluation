@@ -257,10 +257,16 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     tokenizer.pad_token = tokenizer.eos_token
-
     if os.path.exists('SoFa-w-LMs-PPLs.feather'):
         logger.info("Found file with computed PPLs...")
         df = pd.read_feather('SoFa-w-LMs-PPLs.feather')
+        model_name_clean = args.model_name.replace('/', '-')
+        found_column = [i for i in df.columns if i==model_name_clean]
+        if not found_column:
+            logger.info("No model evaluation results found. Computing PPLs for " + model_name_clean)
+            df = compute_probe_ppls(df, model, tokenizer, args.batch_size, args.model_name)
+            df.reset_index(drop=True).to_feather('SoFa-w-LMs-PPLs.feather')
+
     else:
         df = compute_probe_ppls(df, model, tokenizer, args.batch_size, args.model_name)
         df.reset_index(drop=True).to_feather('SoFa-w-LMs-PPLs.feather')
