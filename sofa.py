@@ -75,22 +75,22 @@ def compute_perplexity(texts, model, tokenizer, batch_size=512, max_length=32, d
     return [round(p, 5) for p in perplexities]
 
 
-def compute_probe_ppls(data_probe, model, tokenizer, batch_size):
+def compute_probe_ppls(data_probe, model, tokenizer, batch_size, model_name):
     logger.info("Tokenizing input stereotypes...")
     input_texts = data_probe['probe'].tolist()
     logger.info("Computing perplexities for probes...")
     scores = compute_perplexity(input_texts, model, tokenizer, batch_size)
-    model_name_clean = model.name_or_path.replace('/', '-')
+    model_name_clean = model_name.replace('/', '-')
     data_probe[model_name_clean] = scores
     logger.info("Finished computing probe perplexities.")
     return data_probe
 
 
-def compute_identity_ppls(identity_file, model, tokenizer, batch_size):
+def compute_identity_ppls(identity_file, model, tokenizer, batch_size, model_name):
     logger.info("Computing perplexities for identities...")
     with open(identity_file, "r") as f:
         data_dict = json.load(f)
-    model_name_clean = model.name_or_path.replace('/', '-')
+    model_name_clean = model_name.replace('/', '-')
     for key, value in data_dict.items():
         scores = compute_perplexity(value, model, tokenizer, batch_size)
         df = pd.DataFrame({"identity": value, model_name_clean: scores})
@@ -99,9 +99,9 @@ def compute_identity_ppls(identity_file, model, tokenizer, batch_size):
     logger.info("Finished computing identity perplexities.")
 
 
-def compute_sofa_score(df_probes, model):
-    model_name = model.name_or_path.replace('/', '-')
-    LMs_columns = [model_name]
+def compute_sofa_score(df_probes, model, model_name):
+    model_name_clean = model_name.replace('/', '-')
+    LMs_columns = [model_name_clean]
     df = df_probes
     path = './'
     identities = {}
@@ -218,8 +218,10 @@ def compute_sofa_score(df_probes, model):
     cols = ['Model'] + cats_test
     table2 = pd.DataFrame(data, columns=cols)
     logger.info(table2)
-    table2.reset_index(drop=True).to_feather(path + 'Table2.feather')
-    logger.info("Saved Results to " + path + 'Table2.feather')
+    path = f'./{model_name_clean}-'
+    os.makedirs(path, exist_ok=True)
+    table2.reset_index(drop=True).to_feather(path + 'results.feather')
+    logger.info("Saved Results to " + path + 'results.feather')
     return
 
 
@@ -260,11 +262,11 @@ def main():
         logger.info("Found file with computed PPLs...")
         df = pd.read_feather('SoFa-w-LMs-PPLs.feather')
     else:
-        df = compute_probe_ppls(df, model, tokenizer, args.batch_size)
+        df = compute_probe_ppls(df, model, tokenizer, args.batch_size, args.model_name)
         df.reset_index(drop=True).to_feather('SoFa-w-LMs-PPLs.feather')
 
-    compute_identity_ppls(args.identity_file, model, tokenizer, args.batch_size)
-    compute_sofa_score(df, model)
+    compute_identity_ppls(args.identity_file, model, tokenizer, args.batch_size, args.model_name)
+    compute_sofa_score(df, model, args.model_name)
 
 
 if __name__ == "__main__":
