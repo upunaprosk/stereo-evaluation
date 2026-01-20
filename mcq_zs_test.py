@@ -154,8 +154,13 @@ def arc_evaluate(tag, model, tokenizer, category, persistent_dir='bias_bench-mai
 def unqover_evaluate(tag, model, tokenizer, size=None, persistent_dir='bias_bench-main', verbose=False):
     if verbose:
         print(f"----------Evaluate UNQOVER-------------", file=sys.stderr)
-    dataset = load_dataset('json', data_files=f'{os.getenv("HOME")}/github/CAL/data/unqover/datas.jsonl')['train']
-
+    # dataset = load_dataset('json', data_files=f'{os.getenv("HOME")}/github/CAL/data/unqover/datas.jsonl')['train']
+    url = "https://raw.githubusercontent.com/spirit-moon-fly/CAL/master/data/unqover/datas.jsonl"
+    dataset = load_dataset("json", data_files={"train": url})["train"]
+    # frame = load_dataset('json', data_files=f'CAL_data/unqover/datas.jsonl')['train']
+    # print("Using UnQover with the corrected Unknown capitalization")
+    # frame = load_dataset("iproskurina/unqover")["train"]
+    #
     def format_unqover(dataset, idx):
         choices = "ABC"
         context = dataset[idx]['context']
