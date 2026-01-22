@@ -553,8 +553,8 @@ def main(args):
     model_name = args.model_path.split("/")[-1]
 
     use_bnb_8bit = False
-    if not "-0.6B" in model_name and not "-0.5B" in model_name and not "-1B-" in model_name and model_name != "gemma-2b-it" and not "GPTQ" in model_name and not "gptq" in model_name and not "-int4-" in model_name and not 'Sparse-' in model_name:
-        use_bnb_8bit = True
+    # if not "-0.6B" in model_name and not "-0.5B" in model_name and not "-1B-" in model_name and model_name != "gemma-2b-it" and not "GPTQ" in model_name and not "gptq" in model_name and not "-int4-" in model_name and not 'Sparse-' in model_name:
+    #     use_bnb_8bit = True
 
     options = {
         "torch_dtype": torch.float16,
